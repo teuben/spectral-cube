@@ -1,4 +1,9 @@
+from __future__ import print_function, absolute_import, division
+
 import numpy as np
+
+from .cube_utils import iterator_strategy
+from .np_compat import allbadtonan
 
 """
 Functions to compute moment maps in a variety of ways
@@ -40,14 +45,13 @@ def _slice0(cube, axis):
     result = np.zeros(shp)
 
     view = [slice(None)] * 3
-    pix_size = cube._pix_size()[axis]
 
     valid = np.zeros(shp, dtype=np.bool)
     for i in range(cube.shape[axis]):
         view[axis] = i
-        plane = cube.get_filled_data(slices=view)
+        plane = cube._get_filled_data(fill=np.nan, view=view)
         valid |= np.isfinite(plane)
-        result += np.nan_to_num(plane) * pix_size[view]
+        result += np.nan_to_num(plane) * cube._pix_size_slice(axis)
     result[~valid] = np.nan
     return result
 
@@ -69,17 +73,17 @@ def _slice1(cube, axis):
     result = np.zeros(shp)
 
     view = [slice(None)] * 3
-    pix_size = cube._pix_size()[axis]
+    pix_size = cube._pix_size_slice(axis)
     pix_cen = cube._pix_cen()[axis]
     weights = np.zeros(shp)
 
     for i in range(cube.shape[axis]):
         view[axis] = i
-        plane = cube.get_filled_data(fill=0, slices=view)
+        plane = cube._get_filled_data(fill=0, view=view)
         result += (plane *
                    pix_cen[view] *
-                   pix_size[view])
-        weights += plane * pix_size[view]
+                   pix_size)
+        weights += plane * pix_size
     return result / weights
 
 
@@ -96,7 +100,7 @@ def moment_slicewise(cube, order, axis):
     result = np.zeros(shp)
 
     view = [slice(None)] * 3
-    pix_size = cube._pix_size()[axis]
+    pix_size = cube._pix_size_slice(axis)
     pix_cen = cube._pix_cen()[axis]
     weights = np.zeros(shp)
 
@@ -106,11 +110,11 @@ def moment_slicewise(cube, order, axis):
 
     for i in range(cube.shape[axis]):
         view[axis] = i
-        plane = cube.get_filled_data(fill=0, slices=view)
+        plane = cube._get_filled_data(fill=0, view=view)
         result += (plane *
                    (pix_cen[view] - mom1) ** order *
-                   pix_size[view])
-        weights += plane * pix_size[view]
+                   pix_size)
+        weights += plane * pix_size
 
     return (result / weights)
 
@@ -123,16 +127,16 @@ def moment_raywise(cube, order, axis):
     out = np.zeros(shp) * np.nan
 
     pix_cen = cube._pix_cen()[axis]
-    pix_size = cube._pix_size()[axis]
+    pix_size = cube._pix_size_slice(axis)
 
     for x, y, slc in cube._iter_rays(axis):
         # the intensity, i.e. the weights
         include = cube._mask.include(data=cube._data, wcs=cube._wcs,
-                                     slices=slc)
+                                     view=slc)
         if not include.any():
             continue
 
-        data = cube.flattened(slc) * pix_size[slc][include]
+        data = cube.flattened(slc).value * pix_size
 
         if order == 0:
             out[x, y] = data.sum()
@@ -149,17 +153,16 @@ def moment_raywise(cube, order, axis):
         out[x, y] = ordern
     return out
 
-
 def moment_cubewise(cube, order, axis):
     """
     Compute the moments by working with the entire data at once
     """
 
     pix_cen = cube._pix_cen()[axis]
-    data = cube.get_filled_data() * cube._pix_size()[axis]
+    data = cube._get_filled_data() * cube._pix_size_slice(axis)
 
     if order == 0:
-        return np.nansum(data, axis=axis)
+        return allbadtonan(np.nansum)(data, axis=axis)
 
     if order == 1:
         return (np.nansum(data * pix_cen, axis=axis) /
@@ -180,8 +183,6 @@ def moment_auto(cube, order, axis):
     """
     Build a moment map, choosing a strategy to balance speed and memory.
     """
-
-    if np.product(cube.shape) < 1e8:  # smallish, do in RAM
-        return moment_cubewise(cube, order, axis)
-
-    return moment_slicewise(cube, order, axis)  # save memory
+    strategy = dict(cube=moment_cubewise, ray=moment_raywise,
+                    slice=moment_slicewise)
+    return strategy[iterator_strategy(cube, axis)](cube, order, axis)

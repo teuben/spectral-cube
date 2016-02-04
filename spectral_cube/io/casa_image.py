@@ -1,8 +1,13 @@
+from __future__ import print_function, absolute_import, division
+
 import warnings
 from astropy.io import fits
+from astropy.extern import six
 from astropy.wcs import WCS
 import numpy as np
-from spectral_cube import SpectralCube, SpectralCubeMask
+
+from .. import SpectralCube, StokesSpectralCube, BooleanArrayMask, LazyMask
+from .. import cube_utils
 
 # Read and write from a CASA image. This has a few
 # complications. First, by default CASA does not return the
@@ -12,6 +17,13 @@ from spectral_cube import SpectralCube, SpectralCubeMask
 # 4th without a clear expectation). We need to replicate these
 # when writing but don't want them in memory. By default, try to
 # yield the same array in memory that we would get from astropy.
+
+
+def is_casa_image(input, **kwargs):
+    if isinstance(input, six.string_types):
+        if input.endswith('.image'):
+            return True
+    return False
 
 
 def wcs_casa2astropy(casa_wcs):
@@ -74,20 +86,20 @@ def wcs_casa2astropy(casa_wcs):
 
     return wcs
 
-try:
-    from taskinit import ia
-except ImportError:
-    raise ImportError("Could not import CASA (casac) and therefore cannot read CASA .image files")
-
 
 def load_casa_image(filename, skipdata=False,
-                    skipvalid=False, skipcs=False):
+                    skipvalid=False, skipcs=False, **kwargs):
     """
     Load a cube (into memory?) from a CASA image. By default it will transpose
     the cube into a 'python' order and drop degenerate axes. These options can
     be suppressed. The object holds the coordsys object from the image in
     memory.
     """
+
+    try:
+        from taskinit import ia
+    except ImportError:
+        raise ImportError("Could not import CASA (casac) and therefore cannot read CASA .image files")
 
     # use the ia tool to get the file contents
     ia.open(filename)
@@ -106,6 +118,8 @@ def load_casa_image(filename, skipdata=False,
     casa_cs = ia.coordsys()
 
     wcs = wcs_casa2astropy(casa_cs)
+
+    unit = ia.brightnessunit()
 
     # don't need this yet
     # stokes = get_casa_axis(temp_cs, wanttype="Stokes", skipdeg=False,)
@@ -134,9 +148,23 @@ def load_casa_image(filename, skipdata=False,
     # close the ia tool
     ia.close()
 
-    meta = {'filename': filename}
+    meta = {'filename': filename,
+            'BUNIT': unit}
 
-    mask = SpectralCubeMask(wcs, np.logical_not(valid))
-    cube = SpectralCube(data, wcs, mask, meta=meta)
+
+    if wcs.naxis == 3:
+        mask = BooleanArrayMask(np.logical_not(valid), wcs)
+        cube = SpectralCube(data, wcs, mask, meta=meta)
+
+    elif wcs.naxis == 4:
+        data, wcs = cube_utils._split_stokes(data.T, wcs)
+        mask = {}
+        for component in data:
+            data[component], wcs_slice = cube_utils._orient(data[component],
+                                                            wcs)
+            mask[component] = LazyMask(np.isfinite, data=data[component],
+                                       wcs=wcs_slice)
+
+        cube = StokesSpectralCube(data, wcs_slice, mask, meta=meta)
 
     return cube

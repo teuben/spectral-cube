@@ -2,22 +2,82 @@ language: python
 
 python:
     - 2.7
-    - 3.3
+    - 3.4
+    - 3.5
+
+# Setting sudo to false opts in to Travis-CI container-based builds.
+sudo: false
+
+# The apt packages below are needed for sphinx builds, which can no longer
+# be installed with sudo apt-get.
+addons:
+    apt:
+        packages:
+            - graphviz
+            - texlive-latex-extra
+            - dvipng
 
 env:
-    - NUMPY_VERSION=1.8 ASTROPY_VERSION=0.3.1
+    global:
+        # The following versions are the 'default' for tests, unless
+        # overidden underneath. They are defined here in order to save having
+        # to repeat them for all configurations.
+        # We run the tests in 'boxed' mode, i.e. one subprocess per test, 
+        # because there are memory leaks in Astropy that currently cause the 
+        # memory to go up to levels that cause the tests to be slow.
+        - SETUP_CMD='test -a "--boxed"'
+        - NUMPY_VERSION=1.10
+        - ASTROPY_VERSION=stable
+        - CONDA_DEPENDENCIES='matplotlib'
+        - PIP_DEPENDENCIES='pytest-xdist aplpy pvextractor'
+    matrix:
+        - SETUP_CMD='egg_info'
+        - # run with default settings
+        - ASTROPY_VERSION='development'
+        - CONDA_DEPENDENCIES='' PIP_DEPENDENCIES='pytest-xdist'
+
+matrix:
+    include:
+
+        # Do a coverage test in Python 2.
+        - python: 2.7
+          env: SETUP_CMD='test --coverage'
+               CONDA_DEPENDENCIES='matplotlib yt'
+
+        # Check for sphinx doc build warnings - we do this first because it
+        # may run for a long time
+        - python: 2.7
+          env: SETUP_CMD='build_sphinx -w'
+
+        # Try older numpy versions
+        - python: 2.7
+          env: NUMPY_VERSION=1.9
+        - python: 2.7
+          env: NUMPY_VERSION=1.8
+
+        # Test with bottleneck
+        - python: 2.7
+          env: NUMPY_VERSION=1.9 CONDA_DEPENDENCIES='matplotlib bottleneck'
+        - python: 3.4
+          env: NUMPY_VERSION=1.9 CONDA_DEPENDENCIES='matplotlib bottleneck'
 
 before_install:
-   - source .setup_conda.sh $TRAVIS_PYTHON_VERSION
-   - export PATH=/home/travis/anaconda/bin:/home/travis/miniconda3/bin:$PATH
+
+    - git clone git://github.com/astropy/ci-helpers.git
+    - source ci-helpers/travis/setup_conda_$TRAVIS_OS_NAME.sh
+
+    # Make sure that interactive matplotlib backends work
+    - export DISPLAY=:99.0
+    - sh -e /etc/init.d/xvfb start
 
 install:
-   - conda install --yes python=$TRAVIS_PYTHON_VERSION numpy=$NUMPY_VERSION astropy=$ASTROPY_VERSION pytest pip
-   - pip install pytest-cov coveralls
+
+    # radio beam
+    - if [[ $SETUP_CMD != egg_info ]]; then $PIP_INSTALL https://github.com/radio-astro-tools/radio_beam/archive/master.zip; fi
 
 script:
-   - cd spectral_cube/tests/data ; make ; cd ../../../
-   - py.test --cov spectral_cube
+    - if [[ $SETUP_CMD != egg_info ]]; then cd spectral_cube/tests/data ; make ; cd ../../../; fi
+    - python setup.py $SETUP_CMD
 
 after_success:
- - coveralls
+    - if [[ $SETUP_CMD == 'test --coverage' ]]; then coveralls --rcfile='spectral_cube/tests/coveragerc'; fi
